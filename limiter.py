@@ -20,7 +20,6 @@ db = SQLAlchemy(app)
 
 # defining comapny model
 class Company(db.Model):
-
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(100), unique=True)
     address = db.Column(db.String(100), unique=False)
@@ -44,14 +43,15 @@ company_schema = CompanySchema()
 company_schema = CompanySchema(many=True)
 
 
-def comp_exists():
+def company_exists():
     """
     method to check if company exists for given id
+    if exists, let it pass to the view, otherwise raise 403 forbidden.
     Note: 'id' param is being used as test. It can be changed as needed like comapny name
     """
     if Company.query.get(request.args['id']):
         return True
-    return False
+    abort(403)
 
 
 # defining limiter
@@ -86,14 +86,7 @@ def create_company():
     })
 
 
-def company_exists(comp_id):
-    """
-    method to check if company exists for given id
-    """
-    if Company.query.get(comp_id):
-        return True
-    return False
-
+# to list all companies
 @app.route("/company", methods=["GET"])
 def list_companies():
     all_comp = Company.query.all()
@@ -101,18 +94,11 @@ def list_companies():
     return jsonify(result.data)
 
 
-
+# to get specific company from db
+# this route is to verify limiter intervention
 @app.route("/check_company", methods=["GET"])
 def check_company():
     return "success"
-
-
-# @app.route("/check_company/<id>", methods=["GET"])
-# def check_company(id):
-#     if company_exists(id):
-#         return "company found in database"
-#     abort(403)
-
 
 
 
