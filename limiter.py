@@ -1,65 +1,34 @@
-from flask import Flask, request, jsonify, abort
+from flask import request, jsonify, abort
+from config import app, db, DEFAULT_LIMIT, cache
+from models import Company, company_schema
 from flask_limiter import Limiter
-from flask_limiter.util import get_remote_address
-
-from flask_sqlalchemy import SQLAlchemy
-from flask_marshmallow import Marshmallow
-import os
-
-DEFAULT_LIMIT = "0/day, 0/minute"
-
-# creating flask app
-app = Flask(__name__)
-# for data serialization/render json response
-marsh_app = Marshmallow(app)
-
-# creating db
-basedir = os.path.abspath(os.path.dirname(__file__))
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///' + os.path.join(basedir, 'test.sqlite')
-db = SQLAlchemy(app)
-
-# defining comapny model
-class Company(db.Model):
-
-    id = db.Column(db.Integer, primary_key=True)
-    name = db.Column(db.String(100), unique=True)
-    address = db.Column(db.String(100), unique=False)
-    contact_email = db.Column(db.String(50), unique=True, default="")
-    contact_no = db.Column(db.String(30), default="")
-    limit = db.Column(db.String(50), default=DEFAULT_LIMIT)
-
-    def __init__(self, name, address, contact_email, contact_no, limit):
-        self.name = name
-        self.address = address
-        self.contact_email = contact_email
-        self.contact_no = contact_email
-        self.limit = limit
 
 
-class CompanySchema(marsh_app.Schema):
-    class Meta:
-        fields = ('name', 'address', 'contact_email', 'contact_no', 'limit')
 
-# for single company
-company_schema = CompanySchema()
-# for all companies
-company_schema = CompanySchema(many=True)
-
-
-def comp_exists():
+def get_company_key():
     """
-    method to check if company exists for given id
+    method to return company id as key
     Note: 'id' param is being used as test. It can be changed as needed like comapny name
     """
     return (Company.query.get(request.view_args['id']), 0)
+
+@cache.memoize(timeout=300) # applying cache on this method for 5 mins
+def get_company_limit():
+    try:
+        company = Company.query.get(request.view_args['id'])
+        return company.limit
+    # if company not found raise forbidden 403
+    except:
+        abort(403)
 
 
 # defining limiter
 limiter = Limiter(
     app,
-    key_func=comp_exists,
+    key_func=get_company_key,
     default_limits=[DEFAULT_LIMIT] # this is default limit set for app
 )
+
 
 
 # create new company
@@ -103,6 +72,7 @@ def delete_company(c_id):
 
 
 @app.route("/company", methods=["GET"])
+@cache.memoize(timeout=600)  # cache for 10 mins on route
 # for listing the companies, here limiter is being modified with new the limit and a new key_func
 @limiter.limit("100/day, 5/minute", key_func= lambda : True if (request.method == "GET") else abort(403))
 def list_companies():
@@ -111,17 +81,13 @@ def list_companies():
     return jsonify(result.data)
 
 
-def get_company_limit():
-    try:
-        company = Company.query.get(request.view_args['id'])
-        return company.limit
-    except:
-        abort(403)
+
+def company_limit_str():
+    return get_company_limit()
 
 
 @app.route("/check_company/<id>", methods=["GET"])
-# to get dynamic limit value, a callable is provided to the decorator
-@limiter.limit(limit_value=get_company_limit)
+@limiter.limit(limit_value=company_limit_str) # to get dynamic limit value, a callable is provided to the decorator
 def check_company(id):
     return "success"
 
