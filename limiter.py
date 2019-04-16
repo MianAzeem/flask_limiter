@@ -1,95 +1,69 @@
-from flask import Flask, request, jsonify, abort
+from flask import request, jsonify, abort
+
 from flask_limiter import Limiter
-from flask_limiter.util import get_remote_address
+from manage import app, db, Company, DEFAULT_LIMIT
+from config import company_schema, cache
 
-from flask_sqlalchemy import SQLAlchemy
-from flask_marshmallow import Marshmallow
-import os
-
-DEFAULT_LIMIT = "0/day, 0/minute"
-
-# creating flask app
-app = Flask(__name__)
-# for data serialization/render json response
-marsh_app = Marshmallow(app)
-
-# creating db
-basedir = os.path.abspath(os.path.dirname(__file__))
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///' + os.path.join(basedir, 'test.sqlite')
-db = SQLAlchemy(app)
-
-# defining comapny model
-class Company(db.Model):
-
-    id = db.Column(db.Integer, primary_key=True)
-    name = db.Column(db.String(100), unique=True)
-    address = db.Column(db.String(100), unique=False)
-    contact_email = db.Column(db.String(50), unique=True, default="")
-    contact_no = db.Column(db.String(30), default="")
-    limit = db.Column(db.String(50), default=DEFAULT_LIMIT)
-
-    def __init__(self, name, address, contact_email, contact_no, limit):
-        self.name = name
-        self.address = address
-        self.contact_email = contact_email
-        self.contact_no = contact_email
-        self.limit = limit
+from flask_jwt_extended import (
+    create_access_token,
+    jwt_required,
+    get_jwt_identity
+)
 
 
-class CompanySchema(marsh_app.Schema):
-    class Meta:
-        fields = ('name', 'address', 'contact_email', 'contact_no', 'limit')
 
-# for single company
-company_schema = CompanySchema()
-# for all companies
-company_schema = CompanySchema(many=True)
+def generate_access_token(identity):
+    # create an access token with no expiry date
+    return create_access_token(identity=identity, expires_delta=False)
 
 
-def comp_exists():
+def get_company_key():
     """
-    method to check if company exists for given id
-    Note: 'id' param is being used as test. It can be changed as needed like comapny name
+    key_func: method to return company's identity(uuid string)
     """
-    return (Company.query.get(request.view_args['id']), 0)
+    return (get_jwt_identity(), 0)
 
 
 # defining limiter
 limiter = Limiter(
     app,
-    key_func=comp_exists,
+    key_func=get_company_key,
     default_limits=[DEFAULT_LIMIT] # this is default limit set for app
 )
 
+###############################
+# Endpoints
+###############################
 
 # create new company
 @app.route("/company", methods=["POST"])
-@limiter.limit("100/day, 2/minute", key_func= lambda : True if (request.method == "POST") else abort(403))
+@limiter.limit("100/day, 10/minute", key_func= lambda : True if (request.method == "POST") else abort(403))
 def create_company():
     """
     Method to create a company and insert into db
     """
     name = request.json['name']
-    address = request.json['address']
-    contact_email = request.json['contact_email']
-    contact_no = request.json['contact_no']
     limit = request.json['limit']
     
-    new_company = Company(name, address, contact_email, contact_no, limit)
+    new_company = Company(name=name, limit=limit)
+    try:
+        # add new company into db
+        db.session.add(new_company)
+        db.session.commit()
 
-    # add new company into db
-    db.session.add(new_company)
-    db.session.commit()
+        # creating jwt_access_token
+        access_token = generate_access_token(new_company.identity)
 
-    return jsonify({
-        'Company_name': new_company.name,
-        'address': new_company.address,
-        'email': new_company.contact_email,
-        'Contact_number': new_company.contact_no,
-        'limit': new_company.limit
-    })
+        return jsonify({
+            'Company_name': new_company.name,
+            'limit': new_company.limit,
+            'access_token': access_token
+        })
+    except:
+        return "something went wrong"
 
 
+# delete company by id
 @app.route("/company/<c_id>", methods=["DELETE"])
 @limiter.limit("100/day, 50/minute", key_func= lambda : True if (request.method == "DELETE") else abort(403))
 def delete_company(c_id):
@@ -102,6 +76,7 @@ def delete_company(c_id):
         return abort(404)
 
 
+# list all companies
 @app.route("/company", methods=["GET"])
 # for listing the companies, here limiter is being modified with new the limit and a new key_func
 @limiter.limit("100/day, 5/minute", key_func= lambda : True if (request.method == "GET") else abort(403))
@@ -111,20 +86,25 @@ def list_companies():
     return jsonify(result.data)
 
 
+@cache.memoize(timeout=300) # applying cache on this method for 5 mins
 def get_company_limit():
+    """
+    Method returns company's limit using it's identity
+    """
+    c_identity = get_jwt_identity()
     try:
-        company = Company.query.get(request.view_args['id'])
+        company = Company.query.filter_by(identity=c_identity).first()
         return company.limit
+    # if company not found raise forbidden 403
     except:
         abort(403)
 
 
-@app.route("/check_company/<id>", methods=["GET"])
-# to get dynamic limit value, a callable is provided to the decorator
+@app.route("/get_limit", methods=["GET"])
+@jwt_required
 @limiter.limit(limit_value=get_company_limit)
-def check_company(id):
+def get_company_limit():
     return "success"
-
 
 
 
